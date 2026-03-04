@@ -30,31 +30,42 @@ def get_yf_session():
 def get_history(response: Response, ticker: str, period: str = "1y", interval: str = "1d"):
     response.headers["Cache-Control"] = "public, s-maxage=300, stale-while-revalidate=600"
     try:
-        stock = yf.Ticker(ticker, session=get_yf_session())
-        # We need historical data
-        hist = stock.history(period=period, interval=interval)
-        if hist.empty:
+        url = f"https://query2.finance.yahoo.com/v8/finance/chart/{ticker}?range={period}&interval={interval}"
+        session = get_yf_session()
+        res = session.get(url, timeout=10)
+        
+        if res.status_code != 200:
+            raise Exception(f"Yahoo API returned {res.status_code}: {res.text}")
+            
+        data = res.json()
+        result = data.get("chart", {}).get("result", [])
+        
+        if not result:
             return []
             
-        # Format for lightweight-charts: { time: '2019-04-11', open: 54.51, high: 54.56, low: 53.08, close: 53.12 }
-        hist = hist.reset_index()
-        time_col = 'Datetime' if 'Datetime' in hist.columns else 'Date'
+        chart_data = result[0]
+        timestamps = chart_data.get("timestamp", [])
+        quote = chart_data.get("indicators", {}).get("quote", [{}])[0]
         
         formatted_data = []
-        for _, row in hist.iterrows():
-            # lightweight-charts expects Unix timestamp in seconds for intraday, or string 'YYYY-MM-DD' for daily
-            if interval in ['1d', '1wk', '1mo']:
-                time_val = row[time_col].strftime('%Y-%m-%d')
-            else:
-                time_val = int(row[time_col].timestamp())
+        
+        for i in range(len(timestamps)):
+            # If any crucial data point is null, skip
+            if quote.get("open")[i] is None or quote.get("close")[i] is None:
+                continue
+                
+            time_val = timestamps[i]
+            # If interval is daily or longer, lightweight-charts wants 'YYYY-MM-DD'
+            if interval in ['1d', '5d', '1wk', '1mo', '3mo']:
+                time_val = datetime.fromtimestamp(time_val).strftime('%Y-%m-%d')
                 
             formatted_data.append({
                 "time": time_val,
-                "open": round(row['Open'], 4),
-                "high": round(row['High'], 4),
-                "low": round(row['Low'], 4),
-                "close": round(row['Close'], 4),
-                "volume": int(row['Volume'])
+                "open": round(quote.get("open")[i], 4),
+                "high": round(quote.get("high")[i], 4),
+                "low": round(quote.get("low")[i], 4),
+                "close": round(quote.get("close")[i], 4),
+                "volume": int(quote.get("volume")[i] or 0)
             })
             
         return formatted_data
@@ -65,14 +76,32 @@ def get_history(response: Response, ticker: str, period: str = "1y", interval: s
 def get_info(ticker: str, response: Response):
     response.headers["Cache-Control"] = "public, s-maxage=300, stale-while-revalidate=600"
     try:
-        stock = yf.Ticker(ticker, session=get_yf_session())
-        info = stock.info
+        url = f"https://query2.finance.yahoo.com/v7/finance/quote?symbols={ticker}"
+        session = get_yf_session()
+        res = session.get(url, timeout=10)
+        
+        if res.status_code != 200:
+            raise Exception(f"Yahoo API returned {res.status_code}: {res.text}")
+            
+        data = res.json()
+        result = data.get("quoteResponse", {}).get("result", [])
+        
+        if not result:
+             return {
+                "name": ticker,
+                "symbol": ticker,
+                "price": "N/A",
+                "currency": "USD",
+                "changePercent": None
+            }
+            
+        info = result[0]
         return {
-            "name": info.get("longName", ticker),
+            "name": info.get("longName", info.get("shortName", ticker)),
             "symbol": ticker,
-            "price": info.get("currentPrice", "N/A"),
+            "price": info.get("regularMarketPrice", "N/A"),
             "currency": info.get("currency", "USD"),
-            "changePercent": None # We can calculate this on the frontend, or pass if yfinance provides regularMarketChangePercent
+            "changePercent": info.get("regularMarketChangePercent", None)
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -81,30 +110,33 @@ def get_info(ticker: str, response: Response):
 def get_news(ticker: str, response: Response):
     response.headers["Cache-Control"] = "public, s-maxage=300, stale-while-revalidate=600"
     try:
-        stock = yf.Ticker(ticker, session=get_yf_session())
-        news_items = stock.news
+        url = f"https://query2.finance.yahoo.com/v1/finance/search?q={ticker}&newsCount=10"
+        session = get_yf_session()
+        res = session.get(url, timeout=10)
+        
+        if res.status_code != 200:
+            raise Exception(f"Yahoo API returned {res.status_code}: {res.text}")
+            
+        data = res.json()
+        news_items = data.get("news", [])
         
         formatted_news = []
         agg_sentiment = 0.0
         parsed_count = 0
         
-        for item in news_items[:10]:
-            article = item.get('content', item)
-            title = article.get('title', 'No Title')
+        for item in news_items:
+            title = item.get('title', 'No Title')
+            publisher = item.get('publisher', 'Unknown Publisher')
+            link = item.get('link', '#')
             
-            provider = article.get('provider', {})
-            publisher = provider.get('displayName', 'Unknown Publisher')
-            
-            click_through = article.get('clickThroughUrl')
-            canonical = article.get('canonicalUrl')
-            
-            link = '#'
-            if click_through and isinstance(click_through, dict):
-                link = click_through.get('url', '#')
-            elif canonical and isinstance(canonical, dict):
-                link = canonical.get('url', '#')
-                
-            pub_date = article.get('pubDate', '')
+            # PubDate in search API is usually a unix timestamp
+            pub_date_raw = item.get('providerPublishTime', '')
+            pub_date = ''
+            if pub_date_raw:
+                try:
+                    pub_date = datetime.fromtimestamp(int(pub_date_raw)).strftime('%Y-%m-%d %H:%M')
+                except:
+                    pass
             
             scores = analyzer.polarity_scores(title)
             compound = scores['compound']
