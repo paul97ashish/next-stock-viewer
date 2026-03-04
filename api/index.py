@@ -1,7 +1,8 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Response
 from fastapi.middleware.cors import CORSMiddleware
 import yfinance as yf
 import pandas as pd
+import requests
 from datetime import datetime
 from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
 
@@ -18,10 +19,18 @@ app.add_middleware(
 
 analyzer = SentimentIntensityAnalyzer()
 
+def get_yf_session():
+    session = requests.Session()
+    session.headers.update({
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+    })
+    return session
+
 @app.get("/api/history")
-def get_history(ticker: str, period: str = "1y", interval: str = "1d"):
+def get_history(response: Response, ticker: str, period: str = "1y", interval: str = "1d"):
+    response.headers["Cache-Control"] = "public, s-maxage=300, stale-while-revalidate=600"
     try:
-        stock = yf.Ticker(ticker)
+        stock = yf.Ticker(ticker, session=get_yf_session())
         # We need historical data
         hist = stock.history(period=period, interval=interval)
         if hist.empty:
@@ -53,9 +62,10 @@ def get_history(ticker: str, period: str = "1y", interval: str = "1d"):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/info")
-def get_info(ticker: str):
+def get_info(ticker: str, response: Response):
+    response.headers["Cache-Control"] = "public, s-maxage=300, stale-while-revalidate=600"
     try:
-        stock = yf.Ticker(ticker)
+        stock = yf.Ticker(ticker, session=get_yf_session())
         info = stock.info
         return {
             "name": info.get("longName", ticker),
@@ -68,9 +78,10 @@ def get_info(ticker: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/news")
-def get_news(ticker: str):
+def get_news(ticker: str, response: Response):
+    response.headers["Cache-Control"] = "public, s-maxage=300, stale-while-revalidate=600"
     try:
-        stock = yf.Ticker(ticker)
+        stock = yf.Ticker(ticker, session=get_yf_session())
         news_items = stock.news
         
         formatted_news = []
