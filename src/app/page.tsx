@@ -12,6 +12,7 @@ export default function Home() {
   const [info, setInfo] = useState<any>(null);
   const [sentiment, setSentiment] = useState<any>(null);
   const [isLoading, setIsLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   // Fetch Data when Ticker or Range change
   useEffect(() => {
@@ -19,32 +20,40 @@ export default function Home() {
 
     async function fetchData() {
       setIsLoading(true);
+      setError(null);
       try {
-        // Determine interval purely for UI
         let interval = "1d";
         if (range === "1d" || range === "5d") interval = "5m";
         else if (range === "1mo" || range === "3mo") interval = "1h";
 
         const historyRes = await fetch(`/api/history?ticker=${ticker}&period=${range}&interval=${interval}`);
-        if (!historyRes.ok) throw new Error("Failed to load history");
+
+        if (!historyRes.ok) {
+          const errorText = await historyRes.text();
+          throw new Error(`API Error ${historyRes.status}: ${errorText}`);
+        }
+
         const histData = await historyRes.json();
 
         if (active) {
           setChartData(histData);
         }
 
-        // Info and News are independent of date ranges, only fetch if ticker changes, 
-        // but for simplicity we fetch them here or rely on Vercel Edge caching
         const infoRes = await fetch(`/api/info?ticker=${ticker}`);
-        const infoData = await infoRes.json();
-        if (active) setInfo(infoData);
+        if (infoRes.ok) {
+          const infoData = await infoRes.json();
+          if (active) setInfo(infoData);
+        }
 
         const newsRes = await fetch(`/api/news?ticker=${ticker}`);
-        const newsData = await newsRes.json();
-        if (active) setSentiment(newsData);
+        if (newsRes.ok) {
+          const newsData = await newsRes.json();
+          if (active) setSentiment(newsData);
+        }
 
-      } catch (err) {
-        console.error(err);
+      } catch (err: any) {
+        console.error("Fetch Data Error: ", err);
+        if (active) setError(err.message);
       } finally {
         if (active) setIsLoading(false);
       }
@@ -75,6 +84,16 @@ export default function Home() {
           {isLoading && (
             <div className="absolute inset-0 z-50 flex items-center justify-center bg-[#06090e]/50 backdrop-blur-sm rounded-xl border border-white/5">
               <div className="w-8 h-8 border-4 border-blue-500 border-t-transparent rounded-full animate-spin"></div>
+            </div>
+          )}
+
+          {/* Error Overlay */}
+          {error && (
+            <div className="absolute inset-0 z-40 flex items-center justify-center bg-[#06090e]/80 backdrop-blur-md rounded-xl border border-red-500/20">
+              <div className="bg-red-950/50 text-red-400 p-6 rounded-lg text-center max-w-md border border-red-500/30">
+                <h3 className="text-xl font-bold mb-2">Failed to Fetch Data</h3>
+                <p className="text-sm font-mono break-all">{error}</p>
+              </div>
             </div>
           )}
 
